@@ -40,6 +40,7 @@ import (
 	"crypto/rand"
 	"crypto/sha512"
 	"fmt"
+	"os"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -306,43 +307,7 @@ func (tree Tree) Encrypt(key []byte, cipher Cipher) (string, error) {
 				}
 				hash.Write(bytes)
 			}
-			encrypted := true
-			if tree.Metadata.UnencryptedSuffix != "" {
-				for _, v := range path {
-					if strings.HasSuffix(v, tree.Metadata.UnencryptedSuffix) {
-						encrypted = false
-						break
-					}
-				}
-			}
-			if tree.Metadata.EncryptedSuffix != "" {
-				encrypted = false
-				for _, v := range path {
-					if strings.HasSuffix(v, tree.Metadata.EncryptedSuffix) {
-						encrypted = true
-						break
-					}
-				}
-			}
-			if tree.Metadata.UnencryptedRegex != "" {
-				for _, p := range path {
-					matched, _ := regexp.Match(tree.Metadata.UnencryptedRegex, []byte(p))
-					if matched {
-						encrypted = false
-						break
-					}
-				}
-			}
-			if tree.Metadata.EncryptedRegex != "" {
-				encrypted = false
-				for _, p := range path {
-					matched, _ := regexp.Match(tree.Metadata.EncryptedRegex, []byte(p))
-					if matched {
-						encrypted = true
-						break
-					}
-				}
-			}
+			encrypted := tree.Metadata.encrypted(path)
 			if encrypted {
 				var err error
 				pathString := strings.Join(path, ":") + ":"
@@ -379,43 +344,7 @@ func (tree Tree) Decrypt(key []byte, cipher Cipher) (string, error) {
 	hash := sha512.New()
 	walk := func(branch TreeBranch) error {
 		_, err := branch.walkBranch(branch, make([]string, 0), func(in interface{}, path []string) (interface{}, error) {
-			encrypted := true
-			if tree.Metadata.UnencryptedSuffix != "" {
-				for _, p := range path {
-					if strings.HasSuffix(p, tree.Metadata.UnencryptedSuffix) {
-						encrypted = false
-						break
-					}
-				}
-			}
-			if tree.Metadata.EncryptedSuffix != "" {
-				encrypted = false
-				for _, p := range path {
-					if strings.HasSuffix(p, tree.Metadata.EncryptedSuffix) {
-						encrypted = true
-						break
-					}
-				}
-			}
-			if tree.Metadata.UnencryptedRegex != "" {
-				for _, p := range path {
-					matched, _ := regexp.Match(tree.Metadata.UnencryptedRegex, []byte(p))
-					if matched {
-						encrypted = false
-						break
-					}
-				}
-			}
-			if tree.Metadata.EncryptedRegex != "" {
-				encrypted = false
-				for _, p := range path {
-					matched, _ := regexp.Match(tree.Metadata.EncryptedRegex, []byte(p))
-					if matched {
-						encrypted = true
-						break
-					}
-				}
-			}
+			encrypted := tree.Metadata.encrypted(path)
 			var v interface{}
 			if encrypted {
 				var err error
@@ -459,6 +388,135 @@ func (tree Tree) Decrypt(key []byte, cipher Cipher) (string, error) {
 		}
 	}
 	return fmt.Sprintf("%X", hash.Sum(nil)), nil
+}
+
+func (tree Tree) DecryptLayers(store Store, cipher Cipher, svcs []keyservice.KeyServiceClient, layers []string) error {
+	if len(layers) == 0 {
+		return nil
+	}
+
+	// Lazy-load the plaintext tree from the previous layer's file.
+	// This avoids reading if a layer doesn't contain any inherited encrypted values.
+	var previousLayerBytes []byte
+	loadPreviousLayerBytes := func() error {
+		if previousLayerBytes != nil {
+			return nil
+		}
+
+		log.WithField("layer_path", layers[0]).Info("Loading previous layer")
+		var err error
+		previousLayerBytes, err = os.ReadFile(layers[0])
+		return err
+	}
+
+	var previousLayer *Tree
+	loadPreviousLayer := func() error {
+		if previousLayer != nil {
+			return nil
+		}
+
+		if err := loadPreviousLayerBytes(); err != nil {
+			return err
+		}
+		t, err := store.LoadEncryptedFile(previousLayerBytes)
+		if err != nil {
+			return err
+		}
+		previousLayer = &t
+		return nil
+	}
+
+	var previousLayerDecrypted *Tree
+	decryptPreviousLayer := func() error {
+		if previousLayerDecrypted != nil {
+			return nil
+		}
+
+		if err := loadPreviousLayerBytes(); err != nil {
+			return err
+		}
+		t, err := store.LoadEncryptedFile(previousLayerBytes)
+		if err != nil {
+			return err
+		}
+
+		// Get key from service:
+		log.WithField("layer_path", layers[0]).Info("Decrypting previous layer")
+		dataKey, err := t.Metadata.GetDataKeyWithKeyServices(svcs)
+		if err != nil {
+			return err
+		}
+
+		// Decrypt and verify tree:
+		computedMac, err := t.Decrypt(dataKey, cipher)
+		if err != nil {
+			return err
+		}
+		fileMac, err := cipher.Decrypt(t.Metadata.MessageAuthenticationCode, dataKey, t.Metadata.LastModified.Format(time.RFC3339))
+		if fileMac != computedMac {
+			// If the file has an empty MAC, display "no MAC" instead of not displaying anything
+			if fileMac == "" {
+				fileMac = "no MAC"
+			}
+			return fmt.Errorf("MAC mismatch. File has %s, computed %s", fileMac, computedMac)
+		}
+
+		previousLayerDecrypted = &t
+		return nil
+	}
+
+	walk := func(branch TreeBranch) error {
+		_, err := branch.walkBranch(branch, make([]string, 0), func(in interface{}, path []string) (interface{}, error) {
+			if encrypted := tree.Metadata.encrypted(path); !encrypted {
+				return in, nil
+			}
+			s, ok := in.(string)
+			if !ok {
+				return in, nil
+			}
+
+			// this value should be encrypted
+			if err := loadPreviousLayer(); err != nil {
+				return nil, err
+			}
+
+			// find the value in the plaintext tree
+			queryPath := make([]interface{}, 0, len(path))
+			for _, p := range path {
+				queryPath = append(queryPath, p)
+			}
+			for _, b := range previousLayer.Branches {
+				v, err := b.Truncate(queryPath)
+				if err != nil || s != v {
+					continue
+				}
+
+				// the value in our tree was inherited from the previous layer.
+				// replace it with the decrypted value from the previous layer.
+				if err := decryptPreviousLayer(); err != nil {
+					return nil, err
+				}
+
+				for _, b := range previousLayerDecrypted.Branches {
+					v, err := b.Truncate(queryPath)
+					if err != nil {
+						return nil, err
+					}
+					return v, nil
+				}
+			}
+
+			return in, nil
+		})
+		return err
+	}
+	for _, branch := range tree.Branches {
+		err := walk(branch)
+		if err != nil {
+			return fmt.Errorf("Error walking tree: %s", err)
+		}
+	}
+	return nil
 }
 
 // GenerateDataKey generates a new random data key and encrypts it with all MasterKeys.
@@ -714,6 +772,47 @@ func (m Metadata) GetDataKey() ([]byte, error) {
 	return m.GetDataKeyWithKeyServices([]keyservice.KeyServiceClient{
 		keyservice.NewLocalClient(),
 	})
+}
+
+func (m Metadata) encrypted(path []string) bool {
+	encrypted := true
+	if m.UnencryptedSuffix != "" {
+		for _, p := range path {
+			if strings.HasSuffix(p, m.UnencryptedSuffix) {
+				encrypted = false
+				break
+			}
+		}
+	}
+	if m.EncryptedSuffix != "" {
+		encrypted = false
+		for _, p := range path {
+			if strings.HasSuffix(p, m.EncryptedSuffix) {
+				encrypted = true
+				break
+			}
+		}
+	}
+	if m.UnencryptedRegex != "" {
+		for _, p := range path {
+			matched, _ := regexp.Match(m.UnencryptedRegex, []byte(p))
+			if matched {
+				encrypted = false
+				break
+			}
+		}
+	}
+	if m.EncryptedRegex != "" {
+		encrypted = false
+		for _, p := range path {
+			matched, _ := regexp.Match(m.EncryptedRegex, []byte(p))
+			if matched {
+				encrypted = true
+				break
+			}
+		}
+	}
+	return encrypted
 }
 
 // ToBytes converts a string, int, float or bool to a byte representation.

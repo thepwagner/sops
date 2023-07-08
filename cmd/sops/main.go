@@ -151,6 +151,7 @@ func main() {
 					Cipher:      aes.NewCipher(),
 					KeyServices: svcs,
 					IgnoreMAC:   c.Bool("ignore-mac"),
+					Layers:      c.Bool("layers"),
 				}
 
 				output, err := decrypt(opts)
@@ -219,6 +220,7 @@ func main() {
 					Cipher:      aes.NewCipher(),
 					KeyServices: svcs,
 					IgnoreMAC:   c.Bool("ignore-mac"),
+					Layers:      c.Bool("layers"),
 				}
 
 				output, err := decrypt(opts)
@@ -667,6 +669,10 @@ func main() {
 			Name:  "ignore-mac",
 			Usage: "ignore Message Authentication Code during decryption",
 		},
+		cli.BoolFlag{
+			Name:  "layers, l",
+			Usage: "combine layers during decryption, emit layers during encryption",
+		},
 		cli.StringFlag{
 			Name:  "unencrypted-suffix",
 			Usage: "override the unencrypted key suffix.",
@@ -825,6 +831,7 @@ func main() {
 				Extract:     extract,
 				KeyServices: svcs,
 				IgnoreMAC:   c.Bool("ignore-mac"),
+				Layers:      c.Bool("layers"),
 			})
 		}
 		if c.Bool("rotate") {
@@ -935,6 +942,7 @@ func main() {
 				Cipher:         aes.NewCipher(),
 				KeyServices:    svcs,
 				IgnoreMAC:      c.Bool("ignore-mac"),
+				Layers:         c.Bool("layers"),
 				ShowMasterKeys: c.Bool("show-master-keys"),
 			}
 			if fileExists {

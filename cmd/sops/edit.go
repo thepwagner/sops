@@ -6,9 +6,10 @@ import (
 	"os"
 
 	"crypto/md5"
-	exec "golang.org/x/sys/execabs"
 	"io"
 	"strings"
+
+	exec "golang.org/x/sys/execabs"
 
 	"bufio"
 	"bytes"
@@ -28,6 +29,7 @@ type editOpts struct {
 	InputStore     common.Store
 	OutputStore    common.Store
 	InputPath      string
+	Layers         bool
 	IgnoreMAC      bool
 	KeyServices    []keyservice.KeyServiceClient
 	ShowMasterKeys bool
@@ -102,6 +104,16 @@ func edit(opts editOpts) ([]byte, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	if opts.Layers {
+		layers, err := detectLayers(opts.InputPath)
+		if err != nil {
+			return nil, err
+		}
+		if err := tree.DecryptLayers(opts.InputStore, opts.Cipher, opts.KeyServices, layers); err != nil {
+			return nil, err
+		}
 	}
 
 	return editTree(opts, tree, dataKey)
