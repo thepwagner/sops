@@ -9,6 +9,7 @@ import (
 	osExec "os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -151,7 +152,7 @@ func main() {
 					Cipher:      aes.NewCipher(),
 					KeyServices: svcs,
 					IgnoreMAC:   c.Bool("ignore-mac"),
-					Layers:      c.Bool("layers"),
+					ReadLayers:  c.Bool("read-layers"),
 				}
 
 				output, err := decrypt(opts)
@@ -220,7 +221,7 @@ func main() {
 					Cipher:      aes.NewCipher(),
 					KeyServices: svcs,
 					IgnoreMAC:   c.Bool("ignore-mac"),
-					Layers:      c.Bool("layers"),
+					ReadLayers:  c.Bool("read-layers"),
 				}
 
 				output, err := decrypt(opts)
@@ -670,8 +671,12 @@ func main() {
 			Usage: "ignore Message Authentication Code during decryption",
 		},
 		cli.BoolFlag{
-			Name:  "layers, l",
-			Usage: "combine layers during decryption, emit layers during encryption",
+			Name:  "read-layers, rl",
+			Usage: "combine layers during decryption",
+		},
+		cli.BoolFlag{
+			Name:  "write-layers, wl",
+			Usage: "write layers during encryption",
 		},
 		cli.StringFlag{
 			Name:  "unencrypted-suffix",
@@ -831,7 +836,7 @@ func main() {
 				Extract:     extract,
 				KeyServices: svcs,
 				IgnoreMAC:   c.Bool("ignore-mac"),
-				Layers:      c.Bool("layers"),
+				ReadLayers:  c.Bool("read-layers"),
 			})
 		}
 		if c.Bool("rotate") {
@@ -942,7 +947,8 @@ func main() {
 				Cipher:         aes.NewCipher(),
 				KeyServices:    svcs,
 				IgnoreMAC:      c.Bool("ignore-mac"),
-				Layers:         c.Bool("layers"),
+				ReadLayers:     c.Bool("read-layers"),
+				WriteLayers:    c.Bool("write-layers"),
 				ShowMasterKeys: c.Bool("show-master-keys"),
 			}
 			if fileExists {
@@ -975,6 +981,21 @@ func main() {
 			return toExitError(err)
 		}
 
+		if c.Bool("write-layers") && !c.Bool("in-place") {
+			ext := filepath.Ext(fileName)
+			base := fileName[:len(fileName)-len(ext)]
+			var layer int64
+			var template string
+			if layerRaw := regexp.MustCompile(`\d+$`).FindString(base); layerRaw != "" {
+				layer, _ = strconv.ParseInt(layerRaw, 10, 64)
+				template = strings.ReplaceAll(fileName, layerRaw+ext, fmt.Sprintf("%%0%dd", len(layerRaw))+ext)
+			} else {
+				template = base + ".%03d" + ext
+			}
+
+			fileName = fmt.Sprintf(template, layer+1)
+		}
+
 		// We open the file *after* the operations on the tree have been
 		// executed to avoid truncating it when there's errors
 		if c.Bool("in-place") || isEditMode || c.String("set") != "" {
@@ -987,7 +1008,7 @@ func main() {
 			if err != nil {
 				return toExitError(err)
 			}
-			log.Info("File written successfully")
+			log.WithField("file_name", fileName).Info("File written successfully")
 			return nil
 		}
 

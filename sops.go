@@ -516,6 +516,11 @@ func (tree Tree) DecryptLayers(store Store, cipher Cipher, svcs []keyservice.Key
 			return fmt.Errorf("Error walking tree: %s", err)
 		}
 	}
+
+	if len(layers) > 1 {
+		return tree.DecryptLayers(store, cipher, svcs, layers[1:])
+	}
+
 	return nil
 }
 

@@ -19,7 +19,7 @@ type decryptOpts struct {
 	InputStore  sops.Store
 	OutputStore sops.Store
 	InputPath   string
-	Layers      bool
+	ReadLayers  bool
 	IgnoreMAC   bool
 	Extract     []interface{}
 	KeyServices []keyservice.KeyServiceClient
@@ -47,7 +47,7 @@ func decrypt(opts decryptOpts) (decryptedFile []byte, err error) {
 		return nil, err
 	}
 
-	if opts.Layers {
+	if opts.ReadLayers {
 		layers, err := detectLayers(opts.InputPath)
 		if err != nil {
 			return nil, err

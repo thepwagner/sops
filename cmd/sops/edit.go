@@ -29,7 +29,8 @@ type editOpts struct {
 	InputStore     common.Store
 	OutputStore    common.Store
 	InputPath      string
-	Layers         bool
+	ReadLayers     bool
+	WriteLayers    bool
 	IgnoreMAC      bool
 	KeyServices    []keyservice.KeyServiceClient
 	ShowMasterKeys bool
@@ -98,15 +99,20 @@ func edit(opts editOpts) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Decrypt the file
-	dataKey, err := common.DecryptTree(common.DecryptTreeOpts{
-		Cipher: opts.Cipher, IgnoreMac: opts.IgnoreMAC, Tree: tree, KeyServices: opts.KeyServices,
-	})
-	if err != nil {
-		return nil, err
+
+	// If not using layers, decrypt the tree
+	var dataKey []byte
+	fmt.Println("layers", opts.ReadLayers, opts.WriteLayers)
+	if !opts.WriteLayers || (opts.WriteLayers && opts.ReadLayers) {
+		dataKey, err = common.DecryptTree(common.DecryptTreeOpts{
+			Cipher: opts.Cipher, IgnoreMac: opts.IgnoreMAC, Tree: tree, KeyServices: opts.KeyServices,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	if opts.Layers {
+	if opts.WriteLayers {
 		layers, err := detectLayers(opts.InputPath)
 		if err != nil {
 			return nil, err
@@ -162,6 +168,15 @@ func editTree(opts editOpts, tree *sops.Tree, dataKey []byte) ([]byte, error) {
 		ShowMasterKeys: opts.ShowMasterKeys, Tree: tree})
 	if err != nil {
 		return nil, err
+	}
+
+	if len(dataKey) == 0 {
+		var errs []error
+		dataKey, errs = tree.GenerateDataKeyWithKeyServices(opts.KeyServices)
+		if len(errs) > 0 {
+			err = fmt.Errorf("Could not generate data key: %s", errs)
+			return nil, err
+		}
 	}
 
 	// Encrypt the file
